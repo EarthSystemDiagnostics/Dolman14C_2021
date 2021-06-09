@@ -1,0 +1,222 @@
+---
+title: "Generate bias correction factors by simulation"
+author: "Andrew M. Dolman"
+date: "05/10/2020"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+
+set.seed(20201005)
+```
+
+
+```{r custom-functions}
+F14CToAge <- function(F14C){
+  -8032.926 * log(F14C)
+}
+
+
+AgeToF14C <- function(age){
+  exp(age / -8032.926)
+}
+
+
+GetAgeVar <- function(n.reps, n.ind, n.grps, s, L, focal.age = NULL,
+                      shape = 1, plot = FALSE, print.diagnostics = FALSE){
+  
+  n <- n.ind * n.grps * n.reps
+  
+  scl <- (1000*L/s) / sqrt(shape)
+  
+  gamma.mean <- scl * shape
+  gamma.sd <- sqrt(shape * scl^2)
+  
+  
+  if (is.null(focal.age)){
+    focal.age <- gamma.mean
+  }
+  
+  age <- focal.age + rgamma(
+    n, shape = shape,
+    scale = scl) - gamma.mean
+  
+  age <- array(age, dim = c(n.ind, n.grps, n.reps))
+  
+  F14C <- AgeToF14C(age)
+  
+  age.sample <- apply(age, 2:3, mean)
+  F14C.sample <- apply(F14C, 2:3, mean)
+  
+  age.F14C.sample <- F14CToAge(F14C.sample)
+  
+  sd.sample.age <- apply(age.sample, 2, sd)
+  sd.sample.age.F14C <- apply(age.F14C.sample, 2, sd)
+  
+  mean.sample.age <- apply(age.sample, 2, mean)
+  mean.sample.age.F14C <- apply(age.F14C.sample, 2, mean)
+  
+  sd.age.ind <- sd.sample.age * sqrt(n.ind)
+  sd.age.ind.F14C <- sd.sample.age.F14C * sqrt(n.ind)
+  
+  
+  ## optional plotting routine
+  if (plot){
+    par(mfrow = c(3, 2))
+    hist(age, xlim = c(min(c(0, min(age))), max(age)), col = "green", 
+         main = "Age")
+    abline(v = focal.age, col = "red")
+    abline(v = 5e04, col = "black", lty = 2)
+    
+    hist(F14C, xlim = c(max(1, max(F14C)), min(0, min(F14C))), col = "blue",
+         main = "F14C")
+    abline(v = c(0, 1), col = "black")
+    
+    h.mean.age <- hist(mean.sample.age, plot = FALSE)
+    h.mean.age.F14C <- hist(mean.sample.age.F14C, plot = FALSE)
+    
+    xlim <- range(c(h.mean.age$breaks, h.mean.age.F14C$breaks))
+    ylim <- range(c(0, h.mean.age$counts, h.mean.age.F14C$counts))
+    
+    plot(h.mean.age, ylim = ylim, xlim = xlim, col = "green",
+         main = "Age & F14C-Age (samples)")
+    plot(h.mean.age.F14C, add=T, col = "Blue")
+    abline(v = 5e04, col = "black")
+    abline(v = focal.age, col = "red")
+    
+    
+    hist(mean.sample.age.F14C / mean.sample.age,
+         xlim = c(0, max(1, max(mean.sample.age.F14C / mean.sample.age))),
+         col = "yellow", main = "F14C-Age / Age (samples)")
+    abline(v = 1, col = "red")
+    
+    
+    
+    h.sd.age <- hist(sd.sample.age, plot = FALSE)
+    h.sd.age.F14C <- hist(sd.sample.age.F14C, plot = FALSE)
+    
+    xlim <- range(c(h.sd.age$breaks, h.sd.age.F14C$breaks))
+    ylim <- range(c(0, h.sd.age$counts, h.sd.age.F14C$counts))
+    
+    plot(h.sd.age, ylim = ylim, xlim = xlim, col = "green",
+         main = "SD Age & SD F14C-Age (samples)")
+    plot(h.sd.age.F14C, add = T, col = "Blue")
+    abline(v = gamma.sd / sqrt(n.ind), col = "red")
+    
+    hist(sd.sample.age.F14C / sd.sample.age,
+         xlim = c(0, max(1, max(sd.sample.age.F14C / sd.sample.age))),
+         col = "yellow", main = "SD F14C-age / SD Age (samples)")
+    abline(v = 1, col = "red")
+    
+    par(mfrow = c(1,1))
+  }
+  
+  if (print.diagnostics){
+    print(paste0("gamma.mean = ", gamma.mean))
+    print(paste0("gamma.sd = ", gamma.sd))
+  }
+  
+  d <- data.frame(
+    mean.age = mean.sample.age,
+    mean.age.F14C = mean.sample.age.F14C,
+    sd.age=sd.sample.age,
+    sd.age.F14C=sd.sample.age.F14C,
+    sd.age.ind=sd.age.ind,
+    sd.age.ind.F14C=sd.age.ind.F14C)
+  return(d)
+}
+```
+
+```{r example, fig.height=7, fig.width=5}
+tmp <- GetAgeVar(n.reps = 1000, n.ind = 10, n.grps = 10,
+                 s = 5, L = 10, shape = 1, plot = T)
+```
+
+```{r sim1}
+design <- crossing(n.reps = 100, n.ind = 2^(0:12), n.grps = 100,
+                   s = exp(seq(-9, 5, 1)),
+                   L = 10,
+                   shape = 1)
+
+exp1 <- design %>%
+  group_by(n.reps, s, n.ind, L) %>%
+  do({
+    pars <- .
+    do.call(GetAgeVar, pars)
+  }) %>%
+  ungroup() %>%
+  mutate(
+    L.age = 1/1000 * sd.age * sqrt(n.ind) * s,
+    L.age.F14C = 1/1000 * sd.age.F14C * sqrt(n.ind) * s
+  )
+
+sd.est.bias <- exp1 %>%
+  mutate(sd.ind.ratio = sd.age.ind.F14C / sd.age.ind,
+         age.ratio = mean.age.F14C / mean.age) %>%
+  group_by(s, L, n.ind) %>%
+  summarise(mean.sd.ind.ratio = mean(sd.ind.ratio),
+            mean.age.ratio = mean(age.ratio),
+            n = n(),
+            se.sd.ratio = sd(sd.ind.ratio) / sqrt(n),
+            sd.age.ind = mean(sd.age.ind),
+            sd.age.ind.F14C = mean(sd.age.ind.F14C),
+            mean.age = mean(mean.age),
+            mean.age.F14C = mean(mean.age.F14C)) %>%
+  mutate(a = 1/sqrt(n.ind),
+         sd.ratio_hat = SSfpl(log10(s), A=a, B=1, log10(3), 0.5))
+
+save(sd.est.bias, file = "sd.est.bias.RData")
+```
+
+
+# Plausible variance range 
+
+```{r sim-plausible}
+n.reps <- 1000
+
+n.inds <- sort(unique(round(c(c(3, 5, 6, 10, 30), c(1,2,3,4,6,8, 20, 1000)))))
+
+design <- crossing(n.reps = n.reps, n.ind = n.inds, n.grps = 50,
+                   s = exp(seq(log(1), log(50), length.out = 8)),
+                   L = 10,
+                   focal.age = c(50000))
+
+exp1 <- design %>%
+  group_by(n.reps, s, n.ind, focal.age, L) %>%
+  do({
+    pars <- .
+    do.call(GetAgeVar, pars)
+  }) %>%
+  ungroup() %>%
+  mutate(
+    L.age = 1/1000 * sd.age * sqrt(n.ind) * s,
+    L.age.F14C = 1/1000 * sd.age.F14C * sqrt(n.ind) * s
+  )
+
+
+sd.est.bias.plausible <- exp1 %>%
+  mutate(sd.ind.ratio = sd.age.ind.F14C / sd.age.ind,
+         #sd.ratio = sd.age.F14C / sd.age,
+         age.ratio = mean.age.F14C / mean.age) %>%
+  #select(s, L, n.ind, sd.ratio, sd.age) %>%
+  group_by(s, L, n.ind) %>%
+  summarise(mean.sd.ind.ratio = mean(sd.ind.ratio),
+            #mean.sd.ratio = mean(sd.ratio),
+            mean.age.ratio = mean(age.ratio),
+            n = n(),
+            se.sd.ratio = sd(sd.ind.ratio) / sqrt(n),
+            sd.age.ind = mean(sd.age.ind),
+            sd.age.ind.F14C = mean(sd.age.ind.F14C),
+            mean.age = mean(mean.age),
+            mean.age.F14C = mean(mean.age.F14C))
+
+
+save(sd.est.bias.plausible,
+     file = "sd.est.bias.plausible.RData")
+
+```

@@ -1,0 +1,1035 @@
+---
+title: Analysis and figures for 'Estimating bioturbation from replicated small-sample
+  radiocarbon ages'
+author: "Andrew M. Dolman"
+date: "05/03/2021"
+output:
+  bookdown::pdf_document2:
+    toc: no
+    keep_md: yes
+    fig_crop: no
+  html_document:
+    fig_dev: cairo_png
+subtitle: Revised
+params:
+  doc_section: analysis
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=FALSE, message = FALSE, warning = FALSE, cache = TRUE,
+                      autodep = TRUE, tidy = FALSE, dpi = 300)
+
+library(plyr)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(Bchron)
+library(ggridges)
+library(egg)
+library(sp)
+library(kableExtra)
+library(readr)
+library(knitr)
+library(rnaturalearth)
+library(splines)
+library(directlabels)
+```
+
+
+## Load all radiocarbon data
+
+
+```{r key}
+key <- tibble(core = c("GeoB 10054-4", "GeoB 10066-7", "GeoB 10058-1",
+                       "SO213-84-2", "SO213-84-2", "SO213-84-2",
+                       "OR1-1218-C2-BC"),
+              cruise = c("SO184","SO184","SO184", "SO213/2", "SO213/2",
+                         "SO213/2", "OR1-1218"),
+              site = c("GeoB 10054-4/58-1", "GeoB 10066-7", "GeoB 10054-4/58-1",
+                       "SO213-84-2", "SO213-84-2", "SO213-84-2",
+                       "OR1-1218-C2-BC"))
+```
+
+
+
+```{r core.info}
+core.info <- structure(list(
+  core = c(
+    "GeoB 10054-4", "GeoB 10066-7", "OR1-1218-C2-BC",
+    "GeoB 10058-1", "SO213-84-2", "SO213-84-2", "SO213-84-2"
+  ), site = c(
+    "GeoB 10054-4/58-1",
+    "GeoB 10066-7", "OR1-1218-C2-BC", "GeoB 10054-4/58-1", "SO213-84-2",
+    "SO213-84-2", "SO213-84-2"
+  ), Latitude = c(
+    -8.68166666666667,
+    -9.39266666666667, 10.9005, -8.683, -45.1166666666667, -45.1166666666667,
+    -45.1166666666667
+  ), Longitude = c(
+    112.668333333333, 118.5755,
+    115.307666666667, 112.639, 174.583333333333, 174.583333333333,
+    174.583333333333
+  ), Waterdepth_m = c(
+    1076, 1635, 2208, 1103, 992,
+    992, 992
+  ), Longitude.char = c(
+    "112°40.10'E", "118°34.53'E", "115°18.46'E",
+    "112°38.34'E", "174°35'11.4\\E", "174°35'11.4\\E", "174°35'11.4\\E"
+  ), Latitude.char = c(
+    "8°40.90'S", "9°23.56'S", "10°54.03'N",
+    "8°40.98'S", "45°7'28.2\\S", "45°7'28.2\\S", "45°7'28.2\\S"
+  ),
+  approx.sed.acc.rate.cm.ka = c(18, 13, 2, 18, 3.8, 3.8, 3.8), cruise = c(
+    "SO184", "SO184", "OR1-1218", "SO184", "SO213/2",
+    "SO213/2", "SO213/2"
+  )
+), row.names = c(NA, -7L), class = c(
+  "tbl_df",
+  "tbl", "data.frame"
+))
+```
+
+
+
+## Load data
+
+```{r read-csv-files}
+# read in data
+dat.small.n <- read.csv("small-n-data.csv", stringsAsFactors = FALSE, header = TRUE) %>%
+  mutate(`Size fraction [$\\mu$m]` = size.fraction) %>%
+  mutate(n.forams.grp = factor(n.forams.grp,
+    ordered = TRUE,
+    levels = c("1", "3", "5", "5-6", "10", "30")
+  )) 
+
+
+dat.downcore <- read.csv("downcore-data.csv", stringsAsFactors = FALSE, header = TRUE) %>% 
+  mutate(`Size fraction [$\\mu$m]` = size.fraction) %>% 
+  as_tibble()
+```
+
+## Summary tables
+
+```{r  tab-site-summary}
+site.summary <- core.info %>% 
+  ungroup() %>% 
+  mutate(Latitude.char = as.character(sp::dd2dms(Latitude, NS = TRUE)),
+         Longitude.char = as.character(sp::dd2dms(Longitude, NS = FALSE))) %>% 
+  mutate(Latitude.char = gsub("d", "$^{\\circ}$", Latitude.char),
+         Longitude.char = gsub("d", "$^{\\circ}$", Longitude.char)) %>%
+  dplyr::select(Core = core, Cruise = cruise,
+        Latitude = Latitude.char, Longitude = Longitude.char,
+         `Water depth [m]` = Waterdepth_m) %>% 
+  distinct()
+
+site.summary %>% 
+  knitr::kable(., "latex", booktabs = TRUE, caption = "Sampled locations", escape = FALSE, linesep = "")
+```
+
+```{r summarise-dataset}
+dat.small.n.smry <- dat.small.n %>%
+  group_by(core, site, cruise, subcore, species, size.fraction,
+           `Size fraction [$\\mu$m]`, depth.range, n.forams.grp) %>%
+  dplyr::summarise(n.reps = n()) %>%
+  filter(n.reps > 1) %>% 
+  ungroup()
+
+dat.combined <- bind_rows(dat.small.n.smry, dat.downcore) %>% 
+  dplyr::select(core, subcore, cruise, 
+         depth.range, species,
+         `Size fraction [$\\mu$m]`, n.forams.grp, n.reps) %>% 
+  filter(grepl("x", n.forams.grp, fixed = TRUE) == FALSE)
+
+
+dat.summary <- dat.combined %>%
+  dplyr::select(core, subcore, cruise,
+         depth.range, species,
+         `Size fraction [$\\mu$m]`, n.forams.grp, n.reps) %>%
+  mutate(n.forams.grp = gsub(">", "$>$", n.forams.grp)) %>% 
+  dplyr::rename(Core = core,
+         Cruise = cruise,
+         `Depth [cm]` = depth.range,
+         Species = species,
+         `$\\text{n}_{f}$` = n.forams.grp,
+         `$\\text{n}_{rep}$` = n.reps) %>%
+  rowwise() %>%
+  mutate(subcore = readr::parse_number(subcore),
+         Core = ifelse(is.na(subcore) == FALSE, paste0(Core, " (", subcore, ")", collapse = ","), Core)) %>% 
+  dplyr::select(-subcore) %>% 
+  arrange(Core, `Depth [cm]`) %>%
+  mutate(Species = kableExtra::cell_spec(Species, italic = TRUE)) 
+```
+
+
+```{r tab-data-summary}
+dat.summary %>% 
+  dplyr::select(#-Latitude, -Longitude,
+         -Cruise) %>% 
+  #distinct() %>% 
+  knitr::kable(., "latex", booktabs = TRUE, caption = "Data summary", escape = FALSE, linesep = "")
+```
+
+## Calculate sedimentation rates
+
+
+### Additional figure not in manuscript
+```{r fig_sed-rates}
+p.sed.acc.rates <- dat.downcore %>% 
+  ggplot(aes(x = depth_cm, y = age.14C.cal, group = core, shape = core)) +
+  geom_pointrange(aes(ymax = age.14C.cal + age.14C.cal.se, ymin = age.14C.cal - age.14C.cal.se)) +
+  geom_smooth(method = "lm") +
+  facet_wrap(~site, scales = "free", ncol = 2) +
+  theme_bw()
+
+p.sed.acc.rates
+```
+
+
+```{r fit_lm_for_sed_rates}
+sed.rates <- dat.downcore %>% 
+  group_by(core, site) %>% 
+  do({
+    lm1 <- lm(age.14C.cal ~ depth_cm, data = .)
+    sumr <- summary(lm1)
+    
+    data.frame(term = "depth_cm", 
+               estimate = sumr$coefficients[2,1], 
+               std.error = sumr$coefficients[2,2])
+  }) %>% 
+  mutate(s = 1e03 * 1/estimate,
+         s.err = (std.error/estimate) * s) %>% 
+  dplyr::select(core, site, s, s.err) %>% 
+  group_by(site) %>% 
+  mutate(wt = (1/s.err) / sum(1/s.err)) %>% 
+  mutate(s = sum(s * wt),
+            s.err = sum(s.err * wt)) %>% 
+  dplyr::select(-wt) %>% 
+  ungroup() %>% 
+  arrange(site, core)
+```
+
+```{r sed.rates_table}
+sed.rates %>% 
+  dplyr::select(site, s, s.err) %>% 
+  distinct() %>% 
+  arrange(site) %>% 
+  knitr::kable(., digits = 2)
+```
+
+## Map of core sites
+
+```{r map-palette}
+map.info <- core.info %>% 
+  dplyr::select(core, site, Longitude, Latitude) %>% 
+  filter(core != "T86-10P") %>% 
+  distinct() %>% 
+  mutate(site = ifelse(site == "GeoB 10054-4/58-1", "GeoB 10054-4\nGeoB 10058-1", site))
+
+# Hard code to remove dependency
+#col.pal <- RColorBrewer::brewer.pal(6, name = "Set1")[c(1, 4, 5, 2, 3)]
+col.pal <- c("#E41A1C", "#984EA3", "#FF7F00", "#377EB8", "#4DAF4A")
+names(col.pal) <- map.info$site
+```
+
+
+```{r fig-map-pacific, fig.height=3.5, fig.width=6, fig.cap="Map of core sites"}
+world <- rnaturalearth::ne_countries(scale = 'small', returnclass = 'sp')
+
+worldmap2 <- ggplot(world, aes(x = long, y = lat, group = group)) +
+  geom_polygon(colour = "NA", fill = "Darkgrey", show.legend = F) +
+  coord_map("gall", 100,
+            xlim = c(80, 185),
+            ylim = c(-55, 25)) +
+  geom_point(data = map.info,
+             aes(Longitude, Latitude, colour = site, shape = site),
+             inherit.aes = FALSE, show.legend = T,
+             size = 3) +
+  scale_color_manual("", values = col.pal) +
+  scale_shape_manual("", values = c(15:18))+
+  theme_bw() +
+  theme(legend.position = "right") +
+  guides(colour = guide_legend(ncol = 1)) +
+  scale_x_continuous("Longitude", breaks = c(-90, 0, 90, 120, 150, 180, -180),
+                     labels = function(x) paste0(x,"°")) +
+  scale_y_continuous("Latitude", breaks = c(20, 0, -20, -40),
+                     labels = function(x) paste0(x,"°")) 
+worldmap2
+```
+
+
+
+## Calibration to calendar ages
+
+
+```{r calibration_densities, warning=FALSE}
+# Need the full densities so need to do calibrations here.
+# Order to make later figure pretty
+C14.for.cali <- dat.small.n %>%
+  arrange(sample.label, n.forams.grp, age.14C) %>% 
+  mutate(ID.no = 1:nrow(.))
+
+calib <- prxytools::CalibrateAge(C14.for.cali,
+                                 return.type = "lst",
+                                 curve = "marine20")
+
+# The summarised calendar ages are appended to the input data
+C14 <- calib$df
+
+# These are the full PDFs
+cal.ages <- calib$cal.ages
+```
+
+```{r data_for_density_plots}
+# create data.frames for plotting
+C14.id <- C14 %>% 
+  dplyr::select(ID.no, core, depth_cm, sample.label, n.forams.grp, age.14C.cal, age.14C.cal.se)
+
+# convert odd Bchron format of full PDFs to something tidy
+cali.pdf.df <- plyr::ldply(1:length(cal.ages), function(i){
+  x <- cal.ages[[i]]
+  if (is.na(x)==FALSE){data.frame(age = x[[1]]$ageGrid, d = x[[1]]$densities, .id = i)}else{
+    data.frame(age = 0, d = 0, .id = i)
+    }
+  }) %>% 
+  as_tibble() %>% 
+  mutate(ID.no = as.numeric(.id)) %>% 
+  # join to sample info
+  left_join(C14.id, .) %>% 
+  mutate(.id = as.numeric(.id))
+
+
+cali.pdf.df.mean <- cali.pdf.df %>%
+  dplyr::group_by(.id, ID.no, core, sample.label, n.forams.grp) %>%
+  dplyr::summarise(mean.age.14C.cal = mean(age.14C.cal),
+            max.d = max(d))%>% 
+  ungroup() %>% 
+  mutate(.id = as.numeric(.id))
+```
+
+```{r fig-cal-age-pdfs, fig.height=10, fig.width=8, fig.cap="Calendar age PDFs"}
+# dont plot Lougheed data
+  
+p.cal.age <- cali.pdf.df %>% 
+  filter(core != "T86-10P") %>% 
+  mutate(.id = as.numeric(ID.no)) %>% 
+  filter(is.na(d) == FALSE) %>% 
+  ggplot(aes(x = age/1000, y = .id*max(d)/2, height = d,
+             group = .id,
+             fill = n.forams.grp)
+  ) +
+  geom_ridgeline() +
+  geom_segment(data = filter(cali.pdf.df.mean, is.na(max.d) == FALSE, core != "T86-10P"), 
+               aes(x = mean.age.14C.cal/1000,
+                   xend = mean.age.14C.cal/1000,
+                   y = (.id*max(max.d)/2),
+                   yend = (.id*max(max.d)/2) + max.d,
+                   linetype = "mean"),
+               inherit.aes = F) +
+  facet_wrap(~sample.label, scales = "free") +
+  scale_y_continuous("") +
+  scale_x_continuous("Calendar age [ka]") +
+  theme_bw()+
+  theme(axis.ticks.y = element_blank(), axis.text.y = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        panel.grid.major.y = element_blank()) 
+
+p.cal.age
+```
+
+
+## Calibrated ages in MUC3_21-22
+
+
+```{r MUC-age-pdfs, fig.height=4, fig.width=3}
+f_labeller <- as_labeller(
+  c("3" = "No. forams = 3", "5-6" = "No. forams = 5-6", "30" = "No. forams = 30")
+)
+
+p.cal.age.s <- cali.pdf.df %>% 
+  filter(sample.label == "MUC3_21-22") %>% 
+  mutate(.id = as.numeric(ID.no)) %>% 
+  filter(is.na(d) == FALSE) %>% 
+  ggplot(             ) +
+  geom_ribbon(aes(x = age/1000, ymin = 0, ymax = d,
+             group = .id), alpha = 0.5) +
+  facet_wrap(~sample.label, scales = "free") +
+  scale_y_continuous("") +
+  scale_x_continuous("Calendar age [ka]") +
+  theme_bw()+
+  theme(axis.ticks.y = element_blank(), axis.text.y = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        panel.grid.major.y = element_blank()) +
+  facet_grid(n.forams.grp~., labeller = f_labeller, as.table = FALSE)
+```
+
+
+```{r fig-MUC-age-pdfs, fig.height=4, fig.width=3, fig.cap=""}
+p.cal.age.s
+```
+
+
+## Age ranges for text
+
+```{r}
+C14 %>% 
+  filter(core == "SO213-84-2") %>% 
+  group_by(subcore, n.forams.grp, depth_cm) %>% 
+  summarise(sd.age = sd(age.14C.cal),
+            age.min = min(age.14C.cal),
+            age.max = max(age.14C.cal),
+            range = paste(round(age.min/1000, 2), round(age.max/1000, 2)))
+```
+
+
+
+## Bias correction factors
+
+```{r fig-F14C-bias-extreme, fig.width=4, fig.height=4, fig.cap=""}
+# Pre-calculated bias correction factors are in file "sd.est.bias.RData". They
+# can be recalculated with the code in "generate-bias-correction-factors.Rmd"
+load("sd.est.bias.RData")
+
+line.labs.a <- crossing(x = 2000, n = c(1, 2, 4))
+ 
+line.labs.b <- crossing(x = 0.1, n = c(8, 16, 32, 1024)) 
+
+line.labs <- bind_rows(line.labs.a, line.labs.b) %>% 
+   mutate(y = sqrt(1/n),
+         lab = paste0("italic(n[f])*\" = ", n, "\""))
+
+
+fancy_sqrt <- function(l) {
+  
+     # turn in to character string in scientific notation
+  nf <- 1/l^2
+  
+     l <- paste("sqrt(1/", nf,")")
+     
+     # return this as an expression
+     parse(text=l)
+}
+
+clrs <- c("#1B9E77", "#D95F02", "#7570B3")
+
+sd.est.bias %>% 
+  filter(n.ind < 1025, L/s <= 11000,
+         n.ind %in% c(64, 128, 256, 512) == FALSE) %>% 
+  mutate(n.ind = factor(n.ind)) %>% 
+  ggplot(aes(x = L/s, y = mean.sd.ind.ratio, group = n.ind)) +
+  expand_limits(y = c(0, 1.05)) +
+  coord_cartesian(xlim = c(0.1, 10000)) + 
+  geom_point(alpha = 0.5, colour = clrs[3]) +
+  geom_line(alpha = 1, colour = clrs[3]) +
+  geom_line(aes(y = a), linetype = 3) +
+  scale_x_continuous(trans = "log10",
+                     breaks = c(0.1, 1, 10, 100, 1000, 10000),
+                     labels = c(0.1, 1, 10, 100, 1000, 10000),
+                     sec.axis = 
+                       sec_axis(~10/., 
+                                name = expression("Sediment accumulation rate [cm kyr"^-1*"]"),
+                                breaks = c(0.01, 0.1, 1, 10, 100),
+                     labels = c(0.01, 0.1, 1, 10, 100))) +
+ 
+   scale_y_continuous(breaks = c(0, 0.25, 0.5, 0.75, 1),
+                      sec.axis = sec_axis(~., breaks = c(sqrt(1/c(1, 2, 4, 8, 16, 32, 1024))),
+                                          labels = fancy_sqrt)) +
+  geom_label(data = line.labs, aes(x = x, y = y, label = lab),
+             group = NA,  colour = "black", hjust = 0, label.size = 0,
+             parse = T) +
+  geom_vline(xintercept = 10/1, linetype = 2, colour = clrs[2]) +
+  annotation_logticks(sides = "bt") +
+  theme_bw() +
+  theme(panel.grid = element_blank()) +
+  labs(x = expression("True"~sigma[age]~"[kyr]"),
+       y = expression("Estimated "~sigma[age]~"/"~"true"~sigma[age]))
+```
+
+
+```{r fig-F14C-bias-correction, fig.width=4, fig.height=4, fig.cap=""}
+# Pre-calculated bias correction factors are in file "sd.est.bias.plausible.RData". They
+# can be recalculated with the code in "generate-bias-correction-factors.Rmd"
+load("sd.est.bias.plausible.RData")
+
+lbls <- sd.est.bias.plausible %>% 
+  group_by(n.ind) %>% 
+  dplyr::summarise(y = max(1/mean.sd.ind.ratio)) %>% 
+  mutate(x = Inf,
+         lab = paste0("italic(n[f])*\" = ", n.ind, "\"")) %>% 
+  filter(n.ind %in% c(1,2,3,4, 10, 1000))
+
+
+fig.sd.pl.2 <- sd.est.bias.plausible %>% 
+  mutate(n.ind = factor(n.ind)) %>% 
+  filter(L/s <= 10/1) %>% 
+  filter(n.ind %in% c(1,2,3,4, 10, 1000)) %>% 
+  ggplot(aes(x = sd.age.ind.F14C, y = 1/mean.sd.ind.ratio, group = n.ind)) +
+  geom_point(alpha = 0.5, colour = clrs[3])+
+  geom_line(alpha = 1, colour = clrs[3]) +
+  scale_x_continuous(trans = "log10")+
+  annotation_logticks(sides = "b") +
+  expand_limits(y = 1, x = 11000) +
+  theme_bw() +
+  theme(panel.grid.major.x = element_blank(), panel.grid.minor.x = element_blank()) +
+  scale_colour_discrete(expression(italic(n[f]))) +
+  labs(x = expression("Estimated "~sigma[age]~" [years]"),
+       y = "Bias correction factor") +
+  geom_label(data = lbls, aes(x = x, y = y, label = lab),
+             hjust = 1, label.size = 0, parse = T, size = 3)
+
+fig.sd.pl.2
+```
+
+
+
+## Calculate age-variance and bioturbation depth
+
+
+```{r calc-variances, message=FALSE, warning=FALSE}
+SDofSD <- function(s, n) {
+
+  if (any(n < 2, na.rm = TRUE))
+    warning("n must be greater than or equal to 2")
+  if (any(s < 0, na.rm = TRUE))
+    warning("s must be >= 0")
+  if(length(s) > 1 & length(n) == 1)
+    n <- rep(n, length(s))
+  if(length(n) > 1 & length(s) == 1)
+    s <- rep(s, length(n))
+  if(length(s) != length(n))
+    stop("'s' and 'n' should be vectors of either the same length, ",
+         "or one of them should be length == 1.")
+
+  ifelse(n <= 300, {
+    message("Method: Exact")
+    g.a <- gamma((n - 1) / 2)
+    g.b <- gamma(n / 2)
+    s * (g.a / g.b) * sqrt((n - 1) / 2 - (g.b / g.a) ^ 2)
+  }, {
+    message("Method: Stirling's approximation")
+    s * sqrt(exp(1) * (1 - 1 / n) ^ (n - 1) - 1)
+  })
+}
+
+
+## 14C age and calendar age
+C14.long <- C14 %>%
+  # Remove 1 outlier
+  filter(#is.outlier == FALSE,
+         complete.cases(n.forams)) %>%
+  
+  #dplyr::select required columns
+  dplyr::select(site, core, sample.label, depth_cm, n.forams.grp, n.forams, age.14C, age.14C.cal,
+         age.14C.se, age.14C.cal.se, age.14C.count.se) %>%
+  #pivot to long format
+  gather(age.type, age, age.14C, age.14C.cal) %>%
+  
+  # associate correct age uncertainty, 14C or calibrated
+  # could improve the pivoting to avoid this with the new tidyr::pivot_longer() 
+  mutate(age.se = ifelse(age.type == "age.14C", age.14C.se, age.14C.cal.se)) %>% 
+  dplyr::select(-age.14C.cal.se, -age.14C.se) %>%
+  
+  # group and calculate mean age at each depth
+  group_by(site, sample.label, depth_cm, n.forams.grp, age.type) %>%
+  mutate(mean.age = mean(age, na.rm = T)) %>% 
+  ungroup()
+
+C14.sd <- C14.long %>%
+  group_by(site, core, age.type, sample.label, depth_cm, n.forams.grp) %>%
+  dplyr::summarise(n.grps = n(),
+            # mean should be taken on variance scale
+            mean.machine.err = sqrt(mean(age.se^2, na.rm = T)),
+            sd.age = sd(age),
+            sd.age.corr = sqrt(sd.age^2 - ifelse(sample.label[1] != "GeoB 10066-7_53cm",
+                                                mean.machine.err^2, (mean(age.14C.count.se))^2)),
+            n.forams = mean(n.forams, na.rm = T),
+            mean.age = mean(mean.age, na.rm = T),
+            .groups = "keep")
+
+# join new s estimates
+
+sed.rates.sub <- sed.rates %>% 
+  dplyr::select(-core) %>% 
+  distinct()
+
+C14.sd <- C14.sd %>% 
+  left_join(., sed.rates.sub, by = "site")
+
+# add a sedimentation rate for Lougheed
+# use their published value
+C14.sd <- C14.sd %>% 
+  mutate(s = ifelse(core == "T86-10P", 2.2, s))
+
+C14.sd <- C14.sd %>%
+  mutate(sd.age.ind = sd.age.corr * n.forams^0.5,
+         sd.of.sd = SDofSD(sd.age.corr, n.grps),
+         sd.of.sd.ind = SDofSD(sd.age.ind, n.grps),
+         sd.slice = sqrt(1/12 * (1000 * 1 / s)^2),
+         est.biot.depth = sqrt(sd.age.ind^2 - sd.slice^2) * (s/1000),
+         L = sqrt(sd.age.ind^2 - sd.slice^2) * (s/1000)) %>% 
+  ungroup()
+```
+
+```{r get_correction_factors}
+# Get correction factors
+# These come from a fitted lm acting a lookup table
+lm.plausible <- lm(log(sd.age.ind) ~ ns(log(sd.age.ind.F14C), 6) * as.factor(n.ind),
+                   data = sd.est.bias.plausible)
+
+coor.fac <- C14.sd %>%
+  ungroup() %>% 
+  filter(complete.cases(sd.age.ind),
+         age.type == "age.14C") %>% 
+  dplyr::select(site, sd.age.ind, n.forams, n.forams.grp) %>% 
+  group_by(site, n.forams.grp) %>% 
+  summarise_if(is.numeric, mean) %>% 
+  mutate(n.forams = round(n.forams)) %>% 
+  mutate(sd.age.ind.bc = exp(predict(lm.plausible,
+                                     newdata = data.frame(sd.age.ind.F14C = sd.age.ind,
+                                                          n.ind = n.forams)))) %>% 
+  mutate(bias.correction = sd.age.ind.bc / sd.age.ind) %>% 
+  ungroup() %>% 
+  dplyr::select(site, n.forams.grp, bias.correction)
+
+
+C14.sd <- left_join(C14.sd, coor.fac)
+
+C14.sd <- C14.sd %>% 
+  mutate(L.adj = L * bias.correction,
+         sd.age.ind.bc = sd.age.ind * bias.correction)
+
+C14.sd.ext <- crossing(C14.sd, n.forams.ext =
+                         exp(seq(log(1), log(405), length.out = 100))) %>%
+  mutate(sd.age.ext = sd.age.ind / n.forams.ext^0.5) %>%
+  filter(core == "SO213-84-2")
+```
+
+
+
+## Check that SD declines as 1/sqrt(n)
+
+Slope should be -1/2
+
+```{r fig-SD-n-forams, fig.width=4.5, fig.height=3}
+# Is the slope different to -0.5?
+lm1 <- C14.sd %>% 
+  filter(age.type == "age.14C.cal",
+         core == "SO213-84-2") %>% 
+lm(log10(sd.age.corr)~log10(n.forams), data = .)
+summary(lm1)
+confint(lm1)
+
+sd.dec.dat <-  C14.sd %>% 
+  filter(core == "SO213-84-2", age.type == "age.14C.cal") %>% 
+  mutate(labl = gsub("_", " ", sample.label)) %>% 
+  mutate(labl = gsub("cm", "", labl),
+         labl = paste0(labl, " cm")) %>% 
+  dplyr::select(labl, n.forams, sd.age.corr, sd.age)
+
+
+p.sd.n.forams <- sd.dec.dat %>% 
+  ggplot(aes(x = n.forams, y = sd.age.corr, group = NA)) +
+  #ggplot(aes(x = n.forams, y = sd.age, group = NA)) +
+  geom_abline(intercept = coef(lm1)[1], slope = -0.5,
+              colour = "Red", linetype = 2) +
+  geom_vline(xintercept = 1, colour = "Red", linetype = 2) +
+  geom_smooth(method = "lm", colour = "grey28"#, fullrange = T
+              ) +
+  geom_point(aes(colour = labl, shape = labl)) +
+
+  scale_x_continuous("No. forams per radiocarbon date",
+                     trans = "log10", limits = c(1, 35)) +
+  scale_y_continuous("SD age between samples", trans = "log10",
+                     breaks = c(500, 1000, 2000, 3000, 4000, 5000)) +
+  expand_limits(y = 5000) +
+  annotation_logticks() +
+  theme_bw() +
+  scale_color_brewer("", type = "qual", palette = "Dark2") +
+  scale_shape_discrete("") +
+  theme(panel.grid.minor = element_blank())
+p.sd.n.forams
+```
+
+
+
+## Age variance summary table
+
+```{r var_summary}
+age.var.summary <- C14.sd %>% 
+  ungroup() %>% 
+  filter(#age.type == "age.14C.cal",
+         core != "T86-10P") %>% 
+  dplyr::rename(total.age.sd = sd.age) %>% 
+  dplyr::select(site, age.type, core, depth_cm, n.forams.grp, n.grps,
+         total.age.sd, sd.of.sd, mean.machine.err, sd.slice, sd.age.corr,
+         sd.age.ind, bias.correction, sd.age.ind.bc, sd.of.sd.ind, s, L, L.adj) 
+```
+
+
+
+```{r tab-age-var-summary}
+options(knitr.kable.NA = "..")
+age.var.summary %>% 
+  filter(age.type == "age.14C.cal"#,
+         ) %>% 
+  dplyr::select(core, depth_cm, n.forams.grp, n.grps,
+         total.age.sd, sd.of.sd,
+         mean.machine.err, sd.age.ind,
+         #sd.of.sd.ind,
+         bias.correction,
+         sd.age.ind.bc, sd.slice, s, L, L.adj) %>% 
+  dplyr::rename(Core = core,
+         `Depth [cm]` = depth_cm,
+         `$n_{f}$` = n.forams.grp,
+         `$n_{rep}$` = n.grps,
+         `$\\sigma_{rep}$` = total.age.sd,
+         `$SE_{\\sigma_{rep}}$` = sd.of.sd,
+         `$\\sigma_{meas}$` = mean.machine.err,
+         `$\\sigma_{ind}$` = sd.age.ind,
+         `Bias` = bias.correction,
+         `$\\sigma_{ind_{adj}}$` = sd.age.ind.bc,
+         `$\\sigma_{slice}$` = sd.slice,
+         `$L$` = L,
+         `$s$` = s,
+         `$L_{adj}$` = L.adj) %>% 
+  knitr::kable(., "latex", booktabs = TRUE, linesep = "", 
+               digits = c(0,1,0,0,0,
+                             0,0,0,2,
+                             0,0,1,1,1), 
+               caption = "Measured standard deviation between replicated 14C measurements on small samples of foraminifera, inferred age-heterogeneity between individual foraminifera and the implied bioturbation depth. Value with the subscript 'adj' have been corrected for bias due to the exponential relationship between radiocarbon activity and age.",
+               escape = FALSE) %>% 
+  kableExtra::landscape()
+```
+
+
+## Across core figure
+
+```{r sd.age_sed.rate.new.s.2}
+## dataframe for contour lines
+contour.data <- crossing(
+  sed.acc.rate = seq(1, 50, 1),  biot.depth = c(5, 10, 15, 20, 25)) %>%
+  mutate(
+    sd.age.ind = 1000 * biot.depth / sed.acc.rate,
+    bd.lbl = paste0(biot.depth, " cm"),
+    bd.lbl = factor(bd.lbl,
+      ordered = T,
+      levels = c("5 cm", "10 cm", "15 cm", "20 cm", "25 cm")
+    )
+  )
+
+
+# Variance estimate from Lougheed paper.
+lough <- tibble(sd.age.ind.bc = 4892, s = 2.2, 
+                dataset = "Published\ndata",
+                age.type = "age.14C.cal",
+                site = "T86-10P",
+                core = "T86-10P\n(Lougheed et al)",
+                n.grps = 1) %>% 
+  mutate(L = 1/1000 * s * sd.age.ind.bc,
+         L.adj = L)
+
+
+# Variance estimate from Fagault
+# Foraminiferal samples were picked from core 
+# MD08-3178 (31°17.09'N/11°29.20'W, 2184 m water depth).
+# pers comm Yoann Fagault
+
+fagault <- tibble(sd.age.ind.bc = sqrt(1680^2 - 970^2),
+                  s = 12, 
+                  dataset = "Published\ndata",
+                age.type = "age.14C.cal",
+                site = "MD08-3178",
+                core = "MD08-3178\n(Fagault et al)",
+                n.grps = 1) %>% 
+  mutate(L = 1/1000 * s * sd.age.ind.bc,
+         L.adj = L)
+
+pub.dat <- bind_rows(lough, fagault)
+
+# Add Lougheed to variance data
+
+C14.sd$dataset <- "This study"
+
+c.dat.2 <- C14.sd %>% 
+  filter(#n.grps > 4,
+         age.type == "age.14C.cal") %>% 
+  bind_rows(., pub.dat) 
+  
+core.pal <- RColorBrewer::brewer.pal(7, name = "Dark2")
+names(core.pal) <- c("GeoB 10054-4", "GeoB 10058-1", "GeoB 10066-7",
+                     "OR1-1218-C2-BC", "SO213-84-2", 
+                     "T86-10P\n(Lougheed et al)", "MD08-3178\n(Fagault et al)")
+
+p.new.s.2 <- contour.data %>% 
+  ggplot(aes(x = sed.acc.rate, y = sd.age.ind, group = biot.depth)) +
+  geom_line(linetype = 2) +
+  geom_segment(data = c.dat.2, aes(x = s, xend = s,
+                                   y = sd.age.ind.bc, yend = sd.age.ind,
+                                   group = NULL), colour = "grey40",
+               arrow = arrow(length = unit(0.1, "inches"), type = "open"),
+               inherit.aes = FALSE) +
+  geom_errorbar(data = c.dat.2, aes(x = s,
+                                  ymax = sd.age.ind.bc + sd.of.sd.ind,
+                                  ymin = sd.age.ind.bc - sd.of.sd.ind, width = 0,
+                                colour = core, group = NULL),
+                  inherit.aes = FALSE) +
+  geom_errorbarh(data = c.dat.2, aes(y = sd.age.ind.bc,
+                                   xmax = s + s.err, xmin = s - s.err,
+                                   height = 0,
+                                   colour = core, group = NULL),
+                  inherit.aes = FALSE) +
+  geom_point(data = c.dat.2, aes(x = s, y = sd.age.ind.bc,
+                                shape = dataset,
+                                colour = core, group = NULL),
+             size = 2, inherit.aes = FALSE) +
+  expand_limits(x = 70) + 
+  scale_x_continuous("Sedimentation rate [cm/kyr]", trans = "log10",
+                     breaks = c(1, 2, 5, 10, 50)) +
+  annotation_logticks(sides = "lb") +
+  scale_y_continuous("SD individual age [years]", trans = "log10") +
+  scale_shape_manual("", values = c(15, 16)) +
+  #scale_color_brewer("", type = "qual", palette = "Dark2", direction = 1) +
+  scale_colour_manual("", values = core.pal, breaks = names(core.pal) ) +
+  theme_bw() + 
+  directlabels::geom_dl(aes(label = bd.lbl), 
+                        method = list("last.points", "calc.boxes",
+                                      "enlarge.box", box.color = NA,
+                                      fill = "white", "draw.rects", cex = 0.8))
+```
+
+
+```{r fig-SD-age-sed-rate, fig.width=7, fig.height=4, fig.cap=""}
+p.new.s.2
+```
+
+## Implied bioturbation depths
+
+```{r L_summary}
+biot.ests <- c.dat.2 %>% 
+  ungroup() %>% 
+  dplyr::select(dataset, age.type, site, n.grps, s, s.err, L, L.adj) %>% 
+  dplyr::filter(complete.cases(s, L)) %>% 
+  group_by(dataset, age.type, site, s, s.err) %>% 
+  mutate(wt = (1/sqrt(n.grps)) / sum(1/sqrt(n.grps), na.rm = T)) %>% 
+  dplyr::summarise(L = sum(L * wt, na.rm = T),
+            L.adj = sum(L.adj * wt, na.rm = T)) %>% 
+  arrange(desc(dataset, site)) %>% 
+  ungroup() %>% 
+  select(-dataset)
+```
+
+
+```{r tab-L-summary}
+## format for latex
+biot.ests %>% 
+  ungroup() %>% 
+  dplyr::filter(age.type == "age.14C.cal") %>% 
+  dplyr::select(-age.type) %>% 
+  dplyr::rename(`$SE_s$` = s.err,
+         `$L$` = L,
+         `$s$` = s,
+         `$L_{adj}$` = L.adj) %>% 
+  knitr::kable(., "latex", booktabs = TRUE, linesep = "", digits = 1,
+               caption = "Implied bioturbation depths",
+               escape = FALSE)
+```
+
+
+## Lookup figure for required number of forams for a desired standard deviation of age
+
+
+```{r lookup_fig}
+df.look <- crossing(n.forams = 1:500,
+                    sd.gamma = c(1.5, 3, 6, 12, 25, 50, 100, 200, 400, 800, 1600, 3200),
+                    #sd.gamma = 2^seq(0, 12, 1),
+                    biot.depth = c(5, 10, 15, 20)) %>% 
+  mutate(sed.acc.rate = 1000 * biot.depth / (sd.gamma * sqrt(n.forams)),
+         lbl = paste0(sd.gamma, " years"))
+
+
+  nms <- paste0("Assumed bioturbation depth = ",
+                unique(df.look$biot.depth), " cm")
+  names(nms) <- unique(df.look$biot.depth)
+  
+  lblr <- as_labeller(nms)
+  
+
+p.lookup <- df.look %>% 
+  ggplot(aes(x = n.forams, y = sed.acc.rate, colour = lbl, group = sd.gamma)) + 
+  geom_line()+
+  scale_x_continuous("No. forams in a sample", trans = "log10", limits = c(1, 500),
+                     breaks = c(1:3, 5, seq(10, 30, 10), 50, seq(100, 500, 400))) +
+  scale_y_continuous("Sediment accumulation rate [cm/kyr]",
+                     trans = "log10", limits = c(1, 500),
+                     breaks = c(1:4, 5, seq(10, 30, 10), 50, seq(100, 300, 100),  500)) +
+  annotation_logticks() + 
+  scale_color_grey(start = 0.1, end = 0.1)+
+  expand_limits(x = 0) +
+  theme_bw() +
+  facet_wrap(~biot.depth, ncol = 2,#, label = "label_both", sep = "=")
+             label = lblr)
+
+p.lookup <- directlabels::direct.label(p.lookup, list("far.from.others.borders", "calc.boxes",
+                                   "enlarge.box", box.color = NA,
+                                   fill = "white", "draw.rects"))
+
+```
+
+
+```{r fig-lookup, fig.height=9, fig.width=7, fig.cap=""}
+p.lookup
+```
+
+### Subfigure just for L = 10
+
+```{r lookup_fig_10}
+p.lookup.10 <- df.look %>% 
+  filter(biot.depth == 10) %>% 
+  ggplot(aes(x = n.forams, y = sed.acc.rate, colour = lbl, group = sd.gamma)) + 
+  geom_line()+
+  scale_x_continuous("No. forams in a sample", trans = "log10", limits = c(1, 500),
+                     breaks = c(1:3, 5, seq(10, 30, 10), 50, seq(100, 500, 400))) +
+  scale_y_continuous("Sediment accumulation rate [cm/kyr]",
+                     trans = "log10", limits = c(1, 500),
+                     breaks = c(1:3, 5, seq(10, 30, 10), 50, seq(100, 300, 100),  500)) +
+  annotation_logticks() + 
+  scale_color_grey(start = 0.1, end = 0.1)+
+  expand_limits(x = 0) +
+  theme_bw() +
+  facet_wrap(~biot.depth, ncol = 2,#, label = "label_both", sep = "=")
+             label = lblr)
+
+p.lookup.10 <- directlabels::direct.label(p.lookup.10, list("far.from.others.borders", "calc.boxes",
+                                   "enlarge.box", box.color = NA,
+                                   fill = "white", "draw.rects"))
+
+```
+
+
+```{r fig-lookup.10, fig.height=4, fig.width=5, fig.cap=""}
+p.lookup.10
+```
+
+
+
+## Downcore SO213-84-2
+
+
+```{r}
+SO213_84_2_downcore <- read.csv("SO213_84_2_downcore.csv")
+
+MUC.14C.dat.2 <- age.var.summary %>% 
+  filter(site == "SO213-84-2") %>% 
+  dplyr::select(site, sd.age.ind) %>% 
+  group_by(site) %>% 
+  summarise_if(is.numeric, mean) %>% 
+  left_join(SO213_84_2_downcore, .)
+```
+
+
+```{r downcore, fig.height=5.5, fig.width=3}
+a <- MUC.14C.dat.2 %>%
+  ggplot(aes(x = depth_cm, y = age.14C, group = subcore, colour = subcore)) +
+  geom_line() +
+  geom_linerange(aes(ymax = age.14C + 2*age.14C.se,
+                     ymin = age.14C - 2*age.14C.se),
+                 linetype = 1, size = 0.5, show.legend = FALSE, alpha = 0.75) +
+  geom_linerange(aes(ymax = age.14C + age.14C.se,
+                      ymin = age.14C - age.14C.se),
+                  linetype = 1, size = 2, show.legend = FALSE, alpha = 0.75) +
+  geom_point(size = 1, colour = "Black") +
+  coord_flip() +
+  scale_x_reverse("Depth [cm]")+
+  theme_bw()+
+  theme(panel.grid.minor = element_blank(), legend.position = "top", axis.title.x = element_blank()) +
+  expand_limits(y = c(5000, 10000))+
+  scale_y_continuous("Radiocarbon age [ka]", breaks = 1000*(6:9), labels = 6:9) +
+  scale_color_brewer("", type = "qual", palette = "Dark2")
+
+b <- MUC.14C.dat.2 %>%
+  ggplot(aes(x = depth_cm, y = age.14C, group = subcore, colour = subcore)) +
+  geom_line() +
+  geom_linerange(aes(ymax = age.14C + 2*sqrt(age.14C.se^2 + (sd.age.ind^2)/350),
+                      ymin = age.14C - 2*sqrt(age.14C.se^2 + (sd.age.ind^2)/350)),
+                 linetype = 1, size = 0.5, show.legend = FALSE, alpha = 0.75) +
+  geom_linerange(aes(ymax = age.14C + sqrt(age.14C.se^2 + (sd.age.ind^2)/350),
+                      ymin = age.14C - sqrt(age.14C.se^2 + (sd.age.ind^2)/350)),
+                 linetype = 1, size = 2, show.legend = FALSE, alpha = 0.75) +
+  geom_point(size = 1, colour = "Black") +
+  coord_flip() +
+  scale_x_reverse("Depth [cm]") +
+  expand_limits(y = c(5000, 10000)) +
+  theme_bw()  +
+  theme(panel.grid.minor = element_blank(), legend.position = "none") +
+  scale_y_continuous("Radiocarbon age [ka]", breaks = 1000*(6:9), labels = 6:9)+
+  scale_color_brewer("", type = "qual", palette = "Dark2")
+
+p.downcore <- egg::ggarrange(a, b, ncol = 1, labels = c("a", "b"), draw = FALSE)
+```
+
+
+```{r fig-downcore, fig.height=5.5, fig.width=3, fig.cap=""}
+p.downcore
+```
+
+
+## SE of SD estimates
+
+```{r fig-SD-n-grps, fig.height=3, fig.width=4, fig.cap="Coefficient of variation for estimates of SD-age or implied bioturbation depth as a function of the number of dated samples."}
+dat.sd.n <- crossing(SD = seq(100, length.out = 100),
+                n = 2:30) %>% 
+  mutate(SE.SD = SDofSD(SD, n),
+         SE_SD = SE.SD / SD)
+
+dat.sd.n %>% 
+  ggplot(aes(x = n, y = SE_SD)) +
+  geom_point(colour = "grey", size = 1) +
+  geom_line(alpha = 0.75) +
+  expand_limits(y = 0, x = 0) +
+  geom_vline(xintercept = c(9), linetype = 3) +
+  geom_hline(yintercept = c(1/c(4)), linetype = 3) +
+  expand_limits(y = 0, x = 0) +
+  labs(y = expression("CV of"~sigma[age]~"or inferred "*italic(L)),
+       x = expression("Number of "^"14"*"C measurements")) +
+  scale_x_continuous(breaks = c(0, 9, 10, 20, 30),
+                     labels = c(0, 9, "", 20, 30)) +
+  scale_y_continuous(breaks = c(0, 0.2, 0.25, 0.4, 0.6)) +
+  theme_bw() +
+  theme(panel.grid.minor = element_blank())
+```
+
+
+## Exponential and Gamma distributions
+
+```{r fig-exp-gamma, fig.width=4.5, fig.height=3, fig.cap="Gamma distribution with shape = 1, 2, 3 and 12."}
+exp.gamma <- crossing(age = seq(-1, 40000, length.out = 1000),
+                      n.forams = c(1, 2, 3, 12), s = 5, d = 10) %>% 
+  mutate(exp.sd = 1e03 * d/s,
+         d.gamma = dgamma(age, shape = n.forams, scale = exp.sd/n.forams),
+         n.forams.grp = factor(n.forams, ordered = T,
+                               levels = rev(unique(n.forams))))
+
+p.exp.gamma <- exp.gamma %>% 
+  ggplot(aes(x = age, y = d.gamma, colour = n.forams.grp,
+             fill = n.forams.grp)) +
+  geom_polygon() +
+  geom_vline(aes(xintercept = 1e03 * unique(d) / unique(s)), linetype = 2) +
+  scale_colour_viridis_d(expression(italic(n)~"forams"), option = "plasma", direction = -1,
+                        guide = guide_legend(reverse = T))+
+  scale_fill_viridis_d(expression(italic(n)~"forams"), option = "plasma", direction = -1, 
+                       alpha = seq(0.5, 0.2, length.out = 5),
+                       guide = guide_legend(reverse = T)) +
+# Use coord_cartesian to zoom in on part of the scale without truncating the 
+# data used for the polygon
+  coord_cartesian(xlim = c(-1, 1e04)) + 
+  theme_bw() +
+  labs(title = expression(italic(s)~"= 5 cm kyr"^"-1"*"; "*italic(L)*" = 10 cm"),
+       x = "Age [years]",
+       y = "Probability density") +
+  theme(panel.grid.minor = element_blank())
+p.exp.gamma
+```
+
+
+
